@@ -59,60 +59,57 @@ GST_PLUGIN_PATH=builddir gst-inspect-1.0 norisrc
 
 You should see the element details, pad templates, and the full property list.
 
-### System-wide install (optional)
+### Package and install
+
+The recommended way to install is via the `.deb` package, which places both the
+plugin and SDK library in the correct system directories and runs `ldconfig`
+automatically.
+
+```bash
+# Build the .deb (after ninja -C builddir)
+./package.sh                  # produces gst-nori_1.0.0_arm64.deb
+
+# Install or upgrade
+sudo dpkg -i gst-nori_1.0.0_arm64.deb
+
+# Remove
+sudo dpkg -r gst-nori
+```
+
+Alternatively, install manually without packaging:
 
 ```bash
 sudo ninja -C builddir install
-
-# Also install the Nori SDK runtime library:
 sudo cp sdk/lib/arm64/libNori_Xvision_Std.so /usr/local/lib/   # adjust arch
 sudo ldconfig
 ```
 
-## Using pre-built binaries
+## Using pre-built .deb packages
 
-If you already have `libgstnori.so` built for your architecture, no compilation
-is needed.
-
-### 1. Place the files
-
-You need two shared libraries:
-
-| File                      | What it is                 |
-|---------------------------|----------------------------|
-| `libgstnori.so`           | The GStreamer plugin        |
-| `libNori_Xvision_Std.so`  | The Nori SDK runtime (from `sdk/lib/<arch>/`) |
-
-### 2. Make the SDK library findable
-
-Choose **one** of:
+Download the `.deb` for your architecture from the
+[Releases](../../releases) page.
 
 ```bash
-# Option A: install system-wide (recommended for production)
-sudo cp libNori_Xvision_Std.so /usr/local/lib/
-sudo ldconfig
+# Install (also handles upgrades)
+sudo dpkg -i gst-nori_1.0.0_arm64.deb
 
-# Option B: set LD_LIBRARY_PATH (good for testing)
-export LD_LIBRARY_PATH=/path/to/sdk/lib:$LD_LIBRARY_PATH
+# Verify
+gst-inspect-1.0 norisrc
+
+# Remove
+sudo dpkg -r gst-nori
 ```
 
-### 3. Make the plugin findable
+The `.deb` package:
+- Installs `libgstnori.so` to the system GStreamer plugin directory
+- Installs `libNori_Xvision_Std.so` to `/usr/local/lib/`
+- Runs `ldconfig` on install and removal
+- Declares dependencies on `gstreamer1.0-tools` and `gstreamer1.0-plugins-base`
 
-Choose **one** of:
+### Requirements on the target machine
 
-```bash
-# Option A: point GST_PLUGIN_PATH to the directory containing libgstnori.so
-export GST_PLUGIN_PATH=/path/to/plugin
-
-# Option B: copy into the system GStreamer plugin directory
-sudo cp libgstnori.so $(pkg-config --variable=pluginsdir gstreamer-1.0)/
-```
-
-### 4. Runtime dependencies on the target machine
-
-- GStreamer 1.x runtime: `sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-base`
-- A Nori Xvision USB camera connected to the host
 - Same CPU architecture as the build (arm64 binary will not run on x64)
+- A Nori Xvision USB camera connected to the host
 
 ## Usage examples
 
@@ -260,6 +257,7 @@ mode; this is compatible with GLib >= 2.32.
 ```
 gst-nori/
 ├── meson.build                      # Build system (auto-selects SDK arch)
+├── package.sh                       # Builds a .deb from compiled artifacts
 ├── README.md
 ├── sdk/
 │   ├── include/Nori_Xvision_API/    # SDK headers (3 files)
