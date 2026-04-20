@@ -765,6 +765,19 @@ gst_nori_src_set_caps (GstBaseSrc *bsrc, GstCaps *caps)
     return FALSE;
   }
 
+  /* Trigger mode is latched by the SDK at VideoStart, and the camera firmware
+   * persists the mode across close/reopen cycles. Always enforce the requested
+   * mode here — otherwise a prior HARDWARE setting will keep a new pipeline
+   * (even one explicitly asking for NONE) blocked waiting for trigger pulses. */
+  {
+    uint32_t tret = Nori_Xvision_SetTriggerMode (self->device_index,
+                        (E_TRIGGER_MODE) self->trigger_mode);
+    if (tret != NORI_OK)
+      GST_WARNING_OBJECT (self, "SetTriggerMode(%d) failed: 0x%04x",
+          self->trigger_mode, tret);
+    self->props_dirty &= ~PROP_DIRTY_TRIGGER;
+  }
+
   ret = Nori_Xvision_VideoStart (self->device_index);
   if (ret != NORI_OK) {
     GST_ELEMENT_ERROR (self, RESOURCE, OPEN_READ,
