@@ -12,10 +12,17 @@ set -euo pipefail
 
 BUILDDIR="${1:-builddir}"
 PLUGIN="$BUILDDIR/libgstnori.so"
+NORICTL="$BUILDDIR/nori-ctl"
 
 if [ ! -f "$PLUGIN" ]; then
     echo "Error: $PLUGIN not found. Build the plugin first:" >&2
     echo "  meson setup builddir && ninja -C builddir" >&2
+    exit 1
+fi
+
+if [ ! -f "$NORICTL" ]; then
+    echo "Error: $NORICTL not found. Build it first:" >&2
+    echo "  ninja -C builddir" >&2
     exit 1
 fi
 
@@ -61,13 +68,16 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/DEBIAN"
 mkdir -p "$STAGE/$GST_PLUGIN_REL"
 mkdir -p "$STAGE/usr/local/lib"
+mkdir -p "$STAGE/usr/local/bin"
 
 # ---- Copy files ----
 cp "$PLUGIN"  "$STAGE/$GST_PLUGIN_REL/libgstnori.so"
 cp "$SDK_LIB" "$STAGE/usr/local/lib/libNori_Xvision_Std.so"
+cp "$NORICTL" "$STAGE/usr/local/bin/nori-ctl"
 
 # Strip debug symbols for a smaller package
 strip --strip-unneeded "$STAGE/$GST_PLUGIN_REL/libgstnori.so" 2>/dev/null || true
+strip --strip-unneeded "$STAGE/usr/local/bin/nori-ctl"        2>/dev/null || true
 
 # ---- Compute installed size (KiB) ----
 INSTALLED_SIZE=$(du -sk "$STAGE" | cut -f1)
@@ -83,7 +93,9 @@ Description: GStreamer source plugin for Nori Xvision USB cameras
  A GstPushSrc-based element (norisrc) that captures video from Nori
  Xvision USB cameras via the Nori SDK. Supports MJPEG and YUY2 output
  with runtime camera controls (trigger, exposure, gain, mirror/flip)
- exposed as GStreamer properties.
+ exposed as GStreamer properties. Ships with a nori-ctl CLI utility
+ for enumerating devices and reading/writing trigger mode, ESN, and
+ user-data blocks.
 Installed-Size: $INSTALLED_SIZE
 Section: libs
 Priority: optional
