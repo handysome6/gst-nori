@@ -7,6 +7,7 @@
  */
 
 #include "gstnorisrc.h"
+#include "nori_tag.h"
 
 #include <gst/video/video.h>
 #include <string.h>
@@ -114,6 +115,7 @@ enum
 {
   PROP_0,
   PROP_DEVICE_INDEX,
+  PROP_ROLE,
   PROP_TRIGGER_MODE,
   PROP_MIRROR_FLIP,
   PROP_BRIGHTNESS,
@@ -196,7 +198,16 @@ gst_nori_src_class_init (GstNoriSrcClass *klass)
 
   g_object_class_install_property (gobject_class, PROP_DEVICE_INDEX,
       g_param_spec_uint ("device-index", "Device index",
-          "Index of the Nori camera (0 = first)", 0, 255, 0,
+          "Index of the Nori camera (0 = first). Ignored when 'role' is set.",
+          0, 255, 0,
+          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+
+  g_object_class_install_property (gobject_class, PROP_ROLE,
+      g_param_spec_string ("role", "Role tag",
+          "If set, select the camera whose NORICAM tag (user-data block 255) "
+          "matches this string. Takes precedence over 'device-index'. Use "
+          "`nori-ctl tag set` to assign roles.",
+          NULL,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   g_object_class_install_property (gobject_class, PROP_TRIGGER_MODE,
@@ -305,6 +316,7 @@ static void
 gst_nori_src_init (GstNoriSrc *self)
 {
   self->device_index      = 0;
+  self->role              = NULL;
   self->trigger_mode      = GST_NORI_TRIGGER_NONE;
   self->mirror_flip       = GST_NORI_MF_NORMAL;
   self->brightness        = 0;
@@ -349,6 +361,8 @@ gst_nori_src_finalize (GObject *obj)
   GstNoriSrc *self = GST_NORI_SRC (obj);
   g_free (self->video_infos);
   self->video_infos = NULL;
+  g_free (self->role);
+  self->role = NULL;
   G_OBJECT_CLASS (parent_class)->finalize (obj);
 }
 
@@ -444,6 +458,14 @@ gst_nori_src_set_property (GObject *obj, guint id,
     case PROP_DEVICE_INDEX:
       self->device_index = g_value_get_uint (val);
       break;
+    case PROP_ROLE:
+      g_free (self->role);
+      self->role = g_value_dup_string (val);
+      if (self->role && self->role[0] == '\0') {
+        g_free (self->role);
+        self->role = NULL;
+      }
+      break;
     case PROP_TRIGGER_MODE:
       self->trigger_mode = (GstNoriTriggerMode) g_value_get_enum (val);
       self->props_dirty |= PROP_DIRTY_TRIGGER;
@@ -518,6 +540,7 @@ gst_nori_src_get_property (GObject *obj, guint id,
 
   switch (id) {
     case PROP_DEVICE_INDEX:     g_value_set_uint    (val, self->device_index);       break;
+    case PROP_ROLE:             g_value_set_string  (val, self->role);               break;
     case PROP_TRIGGER_MODE:     g_value_set_enum    (val, self->trigger_mode);       break;
     case PROP_MIRROR_FLIP:      g_value_set_enum    (val, self->mirror_flip);        break;
     case PROP_BRIGHTNESS:       g_value_set_int     (val, self->brightness);         break;
@@ -553,6 +576,37 @@ gst_nori_src_start (GstBaseSrc *bsrc)
     return FALSE;
   }
   self->sdk_inited = TRUE;
+
+  /* If 'role' is set, resolve it to a device index by scanning tags. */
+  if (self->role != NULL) {
+    guint32 n = nori_sdk_num_devices ();
+    gboolean found = FALSE;
+    size_t role_len = strlen (self->role);
+    for (guint32 i = 0; i < n; i++) {
+      BYTE buf[NORI_TAG_BLOCK_SIZE];
+      if (Nori_Xvision_GetUserData (i, NORI_TAG_BLOCK_DEFAULT, buf) != NORI_OK)
+        continue;
+      NoriTagData t;
+      nori_tag_decode (buf, &t);
+      if (t.status == NORI_TAG_VALID
+          && t.role_len == role_len
+          && memcmp (t.role, self->role, role_len) == 0) {
+        self->device_index = i;
+        found = TRUE;
+        GST_INFO_OBJECT (self, "role='%s' matched device[%u]", self->role, i);
+        break;
+      }
+    }
+    if (!found) {
+      GST_ELEMENT_ERROR (self, RESOURCE, NOT_FOUND,
+          ("No camera with role tag '%s' found among %u device(s). "
+           "Use `nori-ctl list` to see tags and `nori-ctl tag set` to assign one.",
+           self->role, n), (NULL));
+      nori_sdk_unref ();
+      self->sdk_inited = FALSE;
+      return FALSE;
+    }
+  }
 
   if (self->device_index >= nori_sdk_num_devices ()) {
     GST_ELEMENT_ERROR (self, RESOURCE, NOT_FOUND,

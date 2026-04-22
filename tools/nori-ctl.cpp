@@ -18,6 +18,8 @@
 #include <Nori_Xvision_API/Nori_Public.h>
 #include <Nori_Xvision_API/Nori_Xvision_API.h>
 
+#include "nori_tag.h"
+
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -26,28 +28,8 @@
 #include <string>
 #include <unistd.h>
 
-static constexpr size_t   USER_DATA_SIZE   = 4096;
-static constexpr size_t   ESN_SIZE         = 64;
-
-static constexpr uint32_t TAG_BLOCK_DEFAULT = 255;
-static constexpr uint16_t TAG_VERSION       = 1;
-static constexpr size_t   TAG_ROLE_MAX      = 64;
-static constexpr uint8_t  TAG_MAGIC[8]      = {'N','O','R','I','C','A','M',0};
-
-/* Tag block layout (4096 bytes, only first 76 used):
- *   [0..7]   magic "NORICAM\0"
- *   [8..9]   version, uint16 LE
- *   [10..11] role_len, uint16 LE, 1..TAG_ROLE_MAX
- *   [12..75] role bytes (non-NUL)
- *   [76..]   reserved (zero)
- */
-enum class TagStatus { None, Valid, Foreign };
-
-struct Tag {
-  TagStatus   status  = TagStatus::None;
-  uint16_t    version = 0;
-  std::string role;
-};
+static constexpr size_t USER_DATA_SIZE = NORI_TAG_BLOCK_SIZE;
+static constexpr size_t ESN_SIZE       = 64;
 
 /* ================================================================
  *  RAII wrapper around Nori_Xvision_Init / UnInit
@@ -111,43 +93,6 @@ static const char *trigger_name(E_TRIGGER_MODE m) {
   return "unknown";
 }
 
-static Tag decode_tag(const BYTE *buf) {
-  Tag t;
-  bool all_ff = true, all_zero = true;
-  for (size_t i = 0; i < 12; ++i) {
-    if (buf[i] != 0xFF) all_ff = false;
-    if (buf[i] != 0x00) all_zero = false;
-  }
-  if (memcmp(buf, TAG_MAGIC, sizeof(TAG_MAGIC)) != 0) {
-    t.status = (all_ff || all_zero) ? TagStatus::None : TagStatus::Foreign;
-    return t;
-  }
-  uint16_t ver = static_cast<uint16_t>(buf[8]  | (buf[9]  << 8));
-  uint16_t len = static_cast<uint16_t>(buf[10] | (buf[11] << 8));
-  t.version = ver;
-  if (ver == 0 || len == 0 || len > TAG_ROLE_MAX) {
-    t.status = TagStatus::Foreign;
-    return t;
-  }
-  for (size_t i = 0; i < len; ++i) {
-    if (buf[12 + i] == 0) { t.status = TagStatus::Foreign; return t; }
-  }
-  t.status = TagStatus::Valid;
-  t.role.assign(reinterpret_cast<const char *>(buf + 12), len);
-  return t;
-}
-
-static void encode_tag(BYTE *buf, const std::string &role) {
-  memset(buf, 0, USER_DATA_SIZE);
-  memcpy(buf, TAG_MAGIC, sizeof(TAG_MAGIC));
-  buf[8]  = static_cast<BYTE>(TAG_VERSION & 0xFF);
-  buf[9]  = static_cast<BYTE>((TAG_VERSION >> 8) & 0xFF);
-  uint16_t len = static_cast<uint16_t>(role.size());
-  buf[10] = static_cast<BYTE>(len & 0xFF);
-  buf[11] = static_cast<BYTE>((len >> 8) & 0xFF);
-  memcpy(buf + 12, role.data(), role.size());
-}
-
 /* Render role for table display: replace non-printable bytes with '.',
  * truncate to `width` with an ellipsis. */
 static std::string sanitize_role(const std::string &r, size_t width) {
@@ -206,17 +151,18 @@ static int cmd_list() {
 
     std::string tag_col;
     BYTE tbuf[USER_DATA_SIZE];
-    uint32_t rret = Nori_Xvision_GetUserData(i, TAG_BLOCK_DEFAULT, tbuf);
+    uint32_t rret = Nori_Xvision_GetUserData(i, NORI_TAG_BLOCK_DEFAULT, tbuf);
     if (rret != NORI_OK) {
       char err[48];
       snprintf(err, sizeof(err), "(read err 0x%x)", rret);
       tag_col = err;
     } else {
-      Tag t = decode_tag(tbuf);
+      NoriTagData t;
+      nori_tag_decode(tbuf, &t);
       switch (t.status) {
-        case TagStatus::None:    tag_col = "-"; break;
-        case TagStatus::Valid:   tag_col = sanitize_role(t.role, 28); break;
-        case TagStatus::Foreign: tag_col = "(foreign content)"; break;
+        case NORI_TAG_NONE:    tag_col = "-"; break;
+        case NORI_TAG_VALID:   tag_col = sanitize_role(t.role, 28); break;
+        case NORI_TAG_FOREIGN: tag_col = "(foreign content)"; break;
       }
     }
 
@@ -243,15 +189,16 @@ static int cmd_tag_get(uint32_t idx, uint32_t block) {
     fprintf(stderr, "GetUserData(block=%u) failed: 0x%04x\n", block, ret);
     return 2;
   }
-  Tag t = decode_tag(buf);
+  NoriTagData t;
+  nori_tag_decode(buf, &t);
   switch (t.status) {
-    case TagStatus::None:
+    case NORI_TAG_NONE:
       printf("(untagged)\n");
       return 0;
-    case TagStatus::Valid:
-      printf("%s\n", t.role.c_str());
+    case NORI_TAG_VALID:
+      printf("%s\n", t.role);
       return 0;
-    case TagStatus::Foreign:
+    case NORI_TAG_FOREIGN:
       fprintf(stderr,
               "Block %u holds unrecognised content (no NORICAM magic or bad header).\n"
               "Use `tag clear` to erase, or `--force` on `tag set` to overwrite.\n",
@@ -267,9 +214,9 @@ static int cmd_tag_set(uint32_t idx, const std::string &role,
     fprintf(stderr, "Role must not be empty.\n");
     return 1;
   }
-  if (role.size() > TAG_ROLE_MAX) {
+  if (role.size() > NORI_TAG_ROLE_MAX) {
     fprintf(stderr, "Role too long: %zu bytes (max %zu).\n",
-            role.size(), TAG_ROLE_MAX);
+            role.size(), (size_t)NORI_TAG_ROLE_MAX);
     return 1;
   }
   if (role.find('\0') != std::string::npos) {
@@ -289,8 +236,9 @@ static int cmd_tag_set(uint32_t idx, const std::string &role,
       fprintf(stderr, "GetUserData(block=%u) failed: 0x%04x\n", block, ret);
       return 2;
     }
-    Tag t = decode_tag(buf);
-    if (t.status == TagStatus::Foreign && !force) {
+    NoriTagData t;
+    nori_tag_decode(buf, &t);
+    if (t.status == NORI_TAG_FOREIGN && !force) {
       fprintf(stderr,
               "Block %u on device %u holds unrecognised data; refusing to overwrite.\n"
               "Pass --force if you really want to write the tag.\n",
@@ -300,7 +248,7 @@ static int cmd_tag_set(uint32_t idx, const std::string &role,
   }
 
   BYTE buf[USER_DATA_SIZE];
-  encode_tag(buf, role);
+  nori_tag_encode(buf, role.data(), role.size());
   uint32_t ret = Nori_Xvision_SetUserData(idx, block, buf);
   if (ret != NORI_OK) {
     fprintf(stderr, "SetUserData(block=%u) failed: 0x%04x\n", block, ret);
@@ -314,8 +262,9 @@ static int cmd_tag_set(uint32_t idx, const std::string &role,
     fprintf(stderr, "Write OK but verification read failed: 0x%04x\n", ret);
     return 2;
   }
-  Tag v = decode_tag(vbuf);
-  if (v.status != TagStatus::Valid || v.role != role) {
+  NoriTagData v;
+  nori_tag_decode(vbuf, &v);
+  if (v.status != NORI_TAG_VALID || role != v.role) {
     fprintf(stderr, "Write/read-back mismatch: tag did not persist as expected.\n");
     return 2;
   }
@@ -526,7 +475,7 @@ static void usage() {
     "      Per-camera identity tag stored in user-data block %u by default.\n"
     "      Survives power cycle and firmware update (per SDK spec).\n"
     "      `tag set` refuses to overwrite unrecognised data without --force.\n",
-    TAG_BLOCK_DEFAULT);
+    NORI_TAG_BLOCK_DEFAULT);
 }
 
 static bool need_args(int argc, int needed) {
@@ -650,19 +599,19 @@ int main(int argc, char *argv[]) {
     };
 
     if (sub == "get") {
-      uint32_t block = TAG_BLOCK_DEFAULT;
+      uint32_t block = NORI_TAG_BLOCK_DEFAULT;
       if (parse_block_flag(4, argc, argv, &block) < 0) return 1;
       return cmd_tag_get(idx, block);
     }
     if (sub == "clear") {
-      uint32_t block = TAG_BLOCK_DEFAULT;
+      uint32_t block = NORI_TAG_BLOCK_DEFAULT;
       if (parse_block_flag(4, argc, argv, &block) < 0) return 1;
       return cmd_tag_clear(idx, block);
     }
     if (sub == "set") {
       if (argc < 5) { usage(); return 1; }
       std::string role = argv[4];
-      uint32_t block = TAG_BLOCK_DEFAULT;
+      uint32_t block = NORI_TAG_BLOCK_DEFAULT;
       bool force = false;
       for (int i = 5; i < argc; ++i) {
         if (!strcmp(argv[i], "--force")) { force = true; }

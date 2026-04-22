@@ -62,6 +62,7 @@ struct _GstNoriSrc
 
   /* --- GObject properties --- */
   guint                device_index;
+  gchar               *role;            /* user-assigned tag label; NULL = match by device_index */
   GstNoriTriggerMode   trigger_mode;
   GstNoriMirrorFlip    mirror_flip;
   gint                 brightness;

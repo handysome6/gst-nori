@@ -45,7 +45,7 @@ shared_library('gstnori',
 
 executable('nori-ctl',
   'tools/nori-ctl.cpp',
-  include_directories : nori_sdk_inc,
+  include_directories : [nori_sdk_inc, include_directories('src')],
   dependencies : [nori_lib],
   install : true,
   build_rpath : nori_lib_dir,
