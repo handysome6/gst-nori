@@ -445,6 +445,27 @@ nori_apply_controls (GstNoriSrc *self)
 }
 
 /* ================================================================
+ *  Read a single PU control's current value, falling back to `cached`
+ *  on SDK failure or before the SDK is initialised.
+ * ================================================================ */
+
+static gint
+nori_get_pu (GstNoriSrc *self, gint cid, gint cached)
+{
+  if (!self->sdk_inited)
+    return cached;
+  int32_t cur = 0, flags = 0, step = 0, mn = 0, mx = 0, def = 0;
+  uint32_t ret = Nori_Xvision_GetProcessingUnitControl (self->device_index,
+                     (int32_t) cid, &cur, &flags, &step, &mn, &mx, &def);
+  if (ret != NORI_OK) {
+    GST_DEBUG_OBJECT (self, "GetProcessingUnitControl(cid=%d) failed: 0x%04x",
+        cid, ret);
+    return cached;
+  }
+  return (gint) cur;
+}
+
+/* ================================================================
  *  set_property / get_property
  * ================================================================ */
 
@@ -539,22 +560,78 @@ gst_nori_src_get_property (GObject *obj, guint id,
   GstNoriSrc *self = GST_NORI_SRC (obj);
 
   switch (id) {
-    case PROP_DEVICE_INDEX:     g_value_set_uint    (val, self->device_index);       break;
-    case PROP_ROLE:             g_value_set_string  (val, self->role);               break;
-    case PROP_TRIGGER_MODE:     g_value_set_enum    (val, self->trigger_mode);       break;
-    case PROP_MIRROR_FLIP:      g_value_set_enum    (val, self->mirror_flip);        break;
-    case PROP_BRIGHTNESS:       g_value_set_int     (val, self->brightness);         break;
-    case PROP_CONTRAST:         g_value_set_int     (val, self->contrast);           break;
-    case PROP_SATURATION:       g_value_set_int     (val, self->saturation);         break;
-    case PROP_SHARPNESS:        g_value_set_int     (val, self->sharpness);          break;
-    case PROP_HUE:              g_value_set_int     (val, self->hue);                break;
-    case PROP_GAMMA:            g_value_set_int     (val, self->gamma);              break;
-    case PROP_GAIN:             g_value_set_int     (val, self->gain);               break;
-    case PROP_EXPOSURE:         g_value_set_int     (val, self->exposure);           break;
-    case PROP_AUTO_EXPOSURE:    g_value_set_boolean (val, self->auto_exposure);      break;
-    case PROP_AUTO_WHITE_BALANCE:g_value_set_boolean(val, self->auto_white_balance); break;
-    case PROP_SENSOR_SHUTTER:   g_value_set_uint    (val, self->sensor_shutter);     break;
-    case PROP_SENSOR_GAIN:      g_value_set_uint    (val, self->sensor_gain);        break;
+    case PROP_DEVICE_INDEX:
+      g_value_set_uint (val, self->device_index);
+      break;
+    case PROP_ROLE:
+      g_value_set_string (val, self->role);
+      break;
+    case PROP_TRIGGER_MODE: {
+      E_TRIGGER_MODE m = (E_TRIGGER_MODE) self->trigger_mode;
+      if (self->sdk_inited)
+        Nori_Xvision_GetTriggerMode (self->device_index, &m);
+      g_value_set_enum (val, (gint) m);
+      break;
+    }
+    case PROP_MIRROR_FLIP: {
+      E_SENSOR_MIRROR_FLIP m = (E_SENSOR_MIRROR_FLIP) self->mirror_flip;
+      if (self->sdk_inited)
+        Nori_Xvision_GetSensorMirrorFlip (self->device_index, &m);
+      g_value_set_enum (val, (gint) m);
+      break;
+    }
+    case PROP_BRIGHTNESS:
+      g_value_set_int (val, nori_get_pu (self, V4L2_CID_BRIGHTNESS, self->brightness));
+      break;
+    case PROP_CONTRAST:
+      g_value_set_int (val, nori_get_pu (self, V4L2_CID_CONTRAST, self->contrast));
+      break;
+    case PROP_SATURATION:
+      g_value_set_int (val, nori_get_pu (self, V4L2_CID_SATURATION, self->saturation));
+      break;
+    case PROP_SHARPNESS:
+      g_value_set_int (val, nori_get_pu (self, V4L2_CID_SHARPNESS, self->sharpness));
+      break;
+    case PROP_HUE:
+      g_value_set_int (val, nori_get_pu (self, V4L2_CID_HUE, self->hue));
+      break;
+    case PROP_GAMMA:
+      g_value_set_int (val, nori_get_pu (self, V4L2_CID_GAMMA, self->gamma));
+      break;
+    case PROP_GAIN:
+      g_value_set_int (val, nori_get_pu (self, V4L2_CID_GAIN, self->gain));
+      break;
+    case PROP_EXPOSURE:
+      g_value_set_int (val, nori_get_pu (self, V4L2_CID_EXPOSURE_ABSOLUTE, self->exposure));
+      break;
+    case PROP_AUTO_EXPOSURE: {
+      /* Setter writes 3 (aperture-priority) for auto, 1 (manual) otherwise;
+       * reverse here so anything but explicit manual reads as auto. */
+      gint cur = nori_get_pu (self, V4L2_CID_EXPOSURE_AUTO,
+                              self->auto_exposure ? 3 : 1);
+      g_value_set_boolean (val, cur != 1);
+      break;
+    }
+    case PROP_AUTO_WHITE_BALANCE: {
+      gint cur = nori_get_pu (self, V4L2_CID_AUTO_WHITE_BALANCE,
+                              self->auto_white_balance ? 1 : 0);
+      g_value_set_boolean (val, cur != 0);
+      break;
+    }
+    case PROP_SENSOR_SHUTTER: {
+      uint32_t v = self->sensor_shutter;
+      if (self->sdk_inited)
+        Nori_Xvision_GetSensorShutter (self->device_index, &v);
+      g_value_set_uint (val, v);
+      break;
+    }
+    case PROP_SENSOR_GAIN: {
+      uint32_t v = self->sensor_gain, mn = 0, mx = 0, step = 0;
+      if (self->sdk_inited)
+        Nori_Xvision_GetSensorGain (self->device_index, &v, &mn, &mx, &step);
+      g_value_set_uint (val, v);
+      break;
+    }
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (obj, id, pspec);
       break;
