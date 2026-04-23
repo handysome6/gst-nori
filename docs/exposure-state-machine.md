@@ -170,9 +170,8 @@ that we are aware of, so adding it does not introduce a deadlock risk.
 
 ## Verifying changes
 
-Use the throwaway test harness at `/tmp/test_norisrc_exposure.py` (created
-during development) for a quick re-verification of all eight scenarios. It
-exercises:
+`tests/test_exposure_state_machine.py` is a PyGObject harness that
+exercises the eight situations the design covers:
 
 1. default AUTO start
 2. default MANUAL start with sensor values
@@ -183,13 +182,23 @@ exercises:
 7. stop / restart re-reads UVC defaults
 8. AE toggle on → off → on → off
 
-Run it with:
+Run from the repo root with the plugin built in `builddir/` and a camera
+connected:
 
 ```bash
 GST_DEBUG=norisrc:5 GST_PLUGIN_PATH=builddir \
-    python3 /tmp/test_norisrc_exposure.py 2>&1 | tee /tmp/exp_test.log
+    python3 tests/test_exposure_state_machine.py 2>&1 | tee /tmp/exp_test.log
+```
+
+Pass one or more scenario numbers to run a subset:
+
+```bash
+python3 tests/test_exposure_state_machine.py 3 5
 ```
 
 For each scenario the log should show one — and only one —
 `Set auto-exposure=…` line per real mode transition, plus the UVC default
-resets only on `MANUAL` entry.
+resets only on `MANUAL` entry. Duplicate writes from two different thread
+IDs would indicate that `apply_lock` is not protecting the apply path.
+
+Requires `python3-gi` and `gir1.2-gst-1.0`.
