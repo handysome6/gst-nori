@@ -92,10 +92,12 @@ Depends: gstreamer1.0-tools, gstreamer1.0-plugins-base
 Description: GStreamer source plugin for Nori Xvision USB cameras
  A GstPushSrc-based element (norisrc) that captures video from Nori
  Xvision USB cameras via the Nori SDK. Supports MJPEG and YUY2 output
- with runtime camera controls (trigger, exposure, gain, mirror/flip)
- exposed as GStreamer properties. Ships with a nori-ctl CLI utility
- for enumerating devices and reading/writing trigger mode, ESN, and
- user-data blocks.
+ with runtime camera controls (trigger-mode, mirror-flip, auto-exposure,
+ auto-white-balance, sensor-shutter, sensor-gain) exposed as GStreamer
+ properties, plus per-camera identity tagging via the 'role' property.
+ Ships with a nori-ctl CLI utility for enumerating devices, tagging
+ roles, reading/writing trigger mode, ESN, user-data blocks, and
+ sensor shutter/gain.
 Installed-Size: $INSTALLED_SIZE
 Section: libs
 Priority: optional

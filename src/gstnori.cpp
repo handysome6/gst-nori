@@ -18,7 +18,7 @@ GST_PLUGIN_DEFINE (
     nori,
     "Nori Xvision USB camera source",
     plugin_init,
-    "1.0.0",
+    VERSION,
     "LGPL",
     "gst-nori",
     "https://github.com/user/gst-nori"

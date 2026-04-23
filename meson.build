@@ -1,5 +1,5 @@
 project('gst-nori', 'cpp',
-  version : '1.0.1',
+  version : '1.1.0',
   meson_version : '>= 0.54',
   default_options : ['cpp_std=c++14', 'warning_level=1'])
 
@@ -40,7 +40,7 @@ shared_library('gstnori',
   build_rpath : nori_lib_dir,
   cpp_args : ['-DGST_USE_UNSTABLE_API',
               '-DPACKAGE="gst-nori"',
-              '-DVERSION="1.0.1"'],
+              '-DVERSION="1.1.0"'],
 )
 
 executable('nori-ctl',
