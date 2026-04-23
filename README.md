@@ -1,10 +1,18 @@
 # gst-nori
 
-A GStreamer source element (`norisrc`) for **Nori Xvision USB cameras**, built on
-top of the Nori Xvision SDK (V10.00.01).  It works as a drop-in replacement for
-`v4l2src` while exposing Nori-specific camera controls (trigger modes, sensor
-shutter/gain, ISP parameters) as GObject properties that can be read and changed
-at runtime.
+A GStreamer source element (`norisrc`) for **Nori Xvision USB cameras**, built
+on top of the Nori Xvision SDK (V10.00.01). Works as a drop-in replacement for
+`v4l2src` while exposing Nori-specific controls (trigger modes, sensor
+shutter/gain, mirror/flip, AE/AWB, per-camera identity tags) as GObject
+properties that can be set on the command line or changed at runtime.
+
+The repo also ships **`nori-ctl`**, a command-line companion for enumerating
+devices, tagging them with role names (so pipelines can pick a camera by
+purpose instead of bus order), and reading or poking SDK state out-of-band.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for what's new and
+[`docs/exposure-state-machine.md`](docs/exposure-state-machine.md) for the
+auto/manual exposure design.
 
 ## Supported output formats
 
@@ -67,10 +75,10 @@ automatically.
 
 ```bash
 # Build the .deb (after ninja -C builddir)
-./package.sh                  # produces gst-nori_1.0.0_arm64.deb
+./package.sh                  # produces gst-nori_1.1.0_arm64.deb
 
 # Install or upgrade
-sudo dpkg -i gst-nori_1.0.0_arm64.deb
+sudo dpkg -i gst-nori_1.1.0_arm64.deb
 
 # Remove
 sudo dpkg -r gst-nori
@@ -91,7 +99,7 @@ Download the `.deb` for your architecture from the
 
 ```bash
 # Install (also handles upgrades)
-sudo dpkg -i gst-nori_1.0.0_arm64.deb
+sudo dpkg -i gst-nori_1.1.0_arm64.deb
 
 # Verify
 gst-inspect-1.0 norisrc
@@ -120,14 +128,21 @@ gst-launch-1.0 norisrc ! jpegdec ! videoconvert ! autovideosink
 # Force YUY2 raw output
 gst-launch-1.0 norisrc ! 'video/x-raw,format=YUY2' ! videoconvert ! autovideosink
 
-# Select second camera
+# Select the second camera by index
 gst-launch-1.0 norisrc device-index=1 ! jpegdec ! videoconvert ! autovideosink
 
-# Set exposure and gain manually
-gst-launch-1.0 norisrc auto-exposure=false exposure=200 gain=64 ! jpegdec ! autovideosink
+# Select a camera by role tag (assigned with `nori-ctl tag set`, see below)
+gst-launch-1.0 norisrc role=front-cam ! jpegdec ! videoconvert ! autovideosink
+
+# Manual exposure and gain (sensor-level, microsecond precision)
+gst-launch-1.0 norisrc auto-exposure=false sensor-shutter=10000 sensor-gain=4 \
+    ! jpegdec ! videoconvert ! autovideosink
 
 # Hardware trigger mode
 gst-launch-1.0 norisrc trigger-mode=hardware ! jpegdec ! autovideosink
+
+# Mirror + flip
+gst-launch-1.0 norisrc mirror-flip=mirror-flip ! jpegdec ! videoconvert ! autovideosink
 
 # Record to MP4
 gst-launch-1.0 norisrc ! jpegdec ! videoconvert ! x264enc ! mp4mux ! filesink location=out.mp4
@@ -149,32 +164,92 @@ GST_DEBUG=norisrc:5 gst-launch-1.0 norisrc ! fakesink
 ## Element properties
 
 All properties can be set on the `gst-launch-1.0` command line or via
-`g_object_set()` in C code.  Camera-control properties (everything below
-`device-index`) can be changed while the pipeline is running.
+`g_object_set()` in C code. Camera-control properties (everything below
+`role`) can be changed while the pipeline is running.
 
-| Property               | Type    | Default | Description                                         |
-|------------------------|---------|---------|-----------------------------------------------------|
-| `device-index`         | uint    | 0       | Camera index (0 = first detected device)            |
-| `trigger-mode`         | enum    | none    | `none`, `software`, `hardware`, or `command`        |
-| `mirror-flip`          | enum    | normal  | `normal`, `mirror`, `flip`, or `mirror-flip`        |
-| `brightness`           | int     | 0       | UVC brightness (`V4L2_CID_BRIGHTNESS`)              |
-| `contrast`             | int     | 0       | UVC contrast (`V4L2_CID_CONTRAST`)                  |
-| `saturation`           | int     | 0       | UVC saturation (`V4L2_CID_SATURATION`)              |
-| `sharpness`            | int     | 0       | UVC sharpness (`V4L2_CID_SHARPNESS`)                |
-| `hue`                  | int     | 0       | UVC hue (`V4L2_CID_HUE`)                            |
-| `gamma`                | int     | 0       | UVC gamma (`V4L2_CID_GAMMA`)                        |
-| `gain`                 | int     | 0       | UVC gain (`V4L2_CID_GAIN`)                          |
-| `exposure`             | int     | 0       | Manual exposure value (`V4L2_CID_EXPOSURE_ABSOLUTE`) |
-| `auto-exposure`        | boolean | true    | Enable/disable auto exposure                        |
-| `auto-white-balance`   | boolean | true    | Enable/disable auto white balance                   |
-| `sensor-shutter`       | uint    | 0       | Sensor shutter time in microseconds                 |
-| `sensor-gain`          | uint    | 0       | Sensor analogue gain multiplier                     |
+| Property             | Type    | Default | Description                                                                                                                                                              |
+|----------------------|---------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `device-index`       | uint    | 0       | Camera index (0 = first detected device). Ignored when `role` is set.                                                                                                    |
+| `role`               | string  | (none)  | Select the camera whose NORICAM tag matches this string. Takes precedence over `device-index`. Assign with `nori-ctl tag set`.                                            |
+| `trigger-mode`       | enum    | none    | `none`, `software`, `hardware`, or `command`.                                                                                                                            |
+| `mirror-flip`        | enum    | normal  | `normal`, `mirror`, `flip`, or `mirror-flip`.                                                                                                                            |
+| `auto-exposure`      | boolean | true    | When `true`, firmware AE drives both shutter and gain. When `false`, the UVC exposure/gain registers are reset to device defaults and `sensor-shutter`/`sensor-gain` take over. |
+| `auto-white-balance` | boolean | true    | Enable/disable UVC auto white balance.                                                                                                                                   |
+| `sensor-shutter`     | uint    | 0       | Sensor shutter / exposure time in microseconds. Only applied when `auto-exposure=false`; a warning is logged otherwise.                                                  |
+| `sensor-gain`        | uint    | 0       | Sensor analog-gain multiplier. Only applied when `auto-exposure=false`; a warning is logged otherwise.                                                                   |
 
-**Note:** The valid ranges for UVC controls (brightness, contrast, etc.) are
-device-specific.  The element accepts the full int range and forwards values to
-the SDK, which will clamp or reject out-of-range values.  Only properties
-explicitly set by the user are sent to the device; unset properties leave the
-camera's own defaults untouched.
+**Manual exposure semantics.** `auto-exposure=false` flips the camera into
+manual mode, resets the UVC exposure and gain registers to *each device's
+own defaults* (so every camera starts from an identical baseline), and then
+applies `sensor-shutter` / `sensor-gain`. Writing those properties while
+`auto-exposure=true` is logged as ignored — the firmware AE loop would
+overwrite them every frame anyway. Full design notes:
+[`docs/exposure-state-machine.md`](docs/exposure-state-machine.md).
+
+**Dirty-bit policy.** Only properties explicitly set by the user are sent
+to the device. Unset properties leave the camera's own defaults untouched.
+
+## `nori-ctl`
+
+A command-line companion installed by the same `.deb` to
+`/usr/local/bin/nori-ctl`. Useful for one-off operations that don't fit
+into a streaming pipeline: enumerating cameras, assigning role tags,
+reading or writing trigger mode and ESN, dumping the full SDK state, and
+poking sensor shutter/gain.
+
+```
+Usage: nori-ctl <command> [args]
+
+  list                                          List connected cameras (incl. tags)
+  state   <idx>                                 Sectioned dump of all SDK state
+
+  trigger get <idx>
+  trigger set <idx> <none|software|hardware|command>
+
+  tag     get   <idx> [--block <n>]             Get role tag
+  tag     set   <idx> <role> [--block <n>] [--force]
+  tag     clear <idx> [--block <n>]
+
+  shutter get <idx>                             Sensor shutter (µs)
+  shutter set <idx> <microseconds>              (auto-switches AE to manual)
+
+  gain    get <idx>                             Sensor analog gain (cur/min/max/step)
+  gain    set <idx> <value>                     (auto-switches AE to manual)
+
+  esn     get <idx> [--hex]                     Camera serial (Gen60 ESN)
+  esn     set <idx> <string>                    (Gen60 cannot write ESN)
+
+  udata   get <idx> <piece> [--out <path>]      Raw 4096-byte user-data block
+  udata   set <idx> <piece>  --in <path>
+```
+
+### Examples
+
+```bash
+# See what's plugged in (and any existing role tags)
+nori-ctl list
+
+# Tag two cameras so pipelines can pick them by purpose
+nori-ctl tag set 0 front-cam
+nori-ctl tag set 1 rear-cam
+
+# Then refer to them in pipelines by role:
+gst-launch-1.0 norisrc role=front-cam ! jpegdec ! autovideosink
+
+# Full state dump for a camera (sensor, image, trigger, WB, UVC PU controls)
+nori-ctl state 0
+
+# Switch a camera into hardware-trigger mode for an external sync source
+nori-ctl trigger set 0 hardware
+
+# Set sensor shutter directly (also flips AE to manual under the hood)
+nori-ctl shutter set 0 5000     # 5 ms exposure
+nori-ctl gain    set 0 8        # 8x analog gain
+```
+
+The role tag is written to user-data block 255 by default and survives
+power cycles. `tag set` refuses to overwrite unrecognised data without
+`--force`.
 
 ## Design decisions
 
@@ -236,12 +311,24 @@ once and torn down only after the last element stops.
 
 ### Dirty-property bitmask
 
-Camera-control properties (brightness, trigger-mode, etc.) are only sent to the
-device when explicitly set by the user.  A bitmask tracks which properties have
-been touched.  This avoids overwriting the camera's factory defaults on start-up
-when the user hasn't requested specific values.  Properties set before streaming
-are queued and applied in `set_caps()` once the stream is live; properties set
-while running are applied immediately.
+Camera-control properties (trigger-mode, sensor-shutter, etc.) are only sent
+to the device when explicitly set by the user. A bitmask tracks which
+properties have been touched. This avoids overwriting the camera's factory
+defaults on start-up when the user hasn't requested specific values.
+Properties set before streaming are queued and applied in `set_caps()` once
+the stream is live; properties set while running are applied immediately.
+
+### AE state machine and `apply_lock`
+
+`auto-exposure` plus `sensor-shutter`/`sensor-gain` are coupled — they all
+end up programming the same physical sensor register via different SDK
+paths. A two-state machine (`AUTO` ↔ `MANUAL`) owns the transitions, and
+entry into `MANUAL` resets the UVC exposure/gain registers to each device's
+own defaults so cross-camera behaviour is deterministic. A per-element
+`GMutex apply_lock` serialises the apply path because the SDK's UVC
+control writes can block for ~1 s, long enough for the state-change thread
+and an external `g_object_set` to race through the transition. Full
+write-up: [`docs/exposure-state-machine.md`](docs/exposure-state-machine.md).
 
 ### C++ compilation
 
@@ -259,6 +346,9 @@ gst-nori/
 ├── meson.build                      # Build system (auto-selects SDK arch)
 ├── package.sh                       # Builds a .deb from compiled artifacts
 ├── README.md
+├── CHANGELOG.md
+├── docs/
+│   └── exposure-state-machine.md    # AE design + apply_lock concurrency
 ├── sdk/
 │   ├── include/Nori_Xvision_API/    # SDK headers (3 files)
 │   └── lib/
@@ -266,10 +356,15 @@ gst-nori/
 │       ├── arm64/libNori_Xvision_Std.so
 │       ├── x64/libNori_Xvision_Std.so
 │       └── x86/libNori_Xvision_Std.so
-└── src/
-    ├── gstnori.cpp                  # Plugin entry: GST_PLUGIN_DEFINE
-    ├── gstnorisrc.cpp               # Element implementation (~560 lines)
-    └── gstnorisrc.h                 # Type definitions, enums, struct layout
+├── src/
+│   ├── gstnori.cpp                  # Plugin entry: GST_PLUGIN_DEFINE
+│   ├── gstnorisrc.cpp               # Element implementation
+│   ├── gstnorisrc.h                 # Type definitions, enums, struct layout
+│   └── nori_tag.h                   # Shared tag (NORICAM) encode/decode
+├── tools/
+│   └── nori-ctl.cpp                 # nori-ctl CLI source
+└── tests/
+    └── test_exposure_state_machine.py   # PyGObject runtime harness
 ```
 
 ## License
