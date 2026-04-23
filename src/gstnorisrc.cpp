@@ -675,11 +675,6 @@ gst_nori_src_start (GstBaseSrc *bsrc)
     for (uint32_t i = 0; i < n; i++) {
       Nori_Xvision_GetDeviceVideoInfo (self->device_index, i,
                                        &self->video_infos[i]);
-      VIDEO_INFO *vi = &self->video_infos[i];
-      GST_DEBUG_OBJECT (self, "  format[%u]: %c%c%c%c %ux%u @ %.1f fps", i,
-          (char)(vi->u_Format >>  0), (char)(vi->u_Format >>  8),
-          (char)(vi->u_Format >> 16), (char)(vi->u_Format >> 24),
-          vi->u_Width, vi->u_Height, vi->f_Fps);
     }
   }
 
