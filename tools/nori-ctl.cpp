@@ -12,6 +12,11 @@
  *   tag     get   <idx>              [--block <n>]
  *   tag     set   <idx> <role>       [--block <n>] [--force]
  *   tag     clear <idx>              [--block <n>]
+ *   shutter get <idx>
+ *   shutter set <idx> <microseconds>
+ *   gain    get <idx>
+ *   gain    set <idx> <value>
+ *   state   <idx>
  */
 
 #include <Nori_Xvision_API/Nori_Error_Define.h>
@@ -20,7 +25,10 @@
 
 #include "nori_tag.h"
 
+#include <linux/v4l2-controls.h>
+
 #include <cerrno>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -89,6 +97,16 @@ static const char *trigger_name(E_TRIGGER_MODE m) {
     case SOFTWARE_TRIIGER_MODE: return "software";
     case HARDWARE_TRIGGER_MODE: return "hardware";
     case COMMAND_TRIGGER_MODE:  return "command";
+  }
+  return "unknown";
+}
+
+static const char *mirror_flip_name(E_SENSOR_MIRROR_FLIP m) {
+  switch (m) {
+    case Normal:         return "Normal";
+    case MIRROR_EN:      return "Mirror";
+    case FLIP_EN:        return "Flip";
+    case MIRROR_FLIP_EN: return "Mirror+Flip";
   }
   return "unknown";
 }
@@ -317,6 +335,239 @@ static int cmd_trigger_set(uint32_t idx, E_TRIGGER_MODE mode) {
   return 0;
 }
 
+/* Switch the camera to manual exposure so sensor shutter/gain writes take
+ * effect. The Nori SDK requires this before SetSensorShutter / SetSensorGain.
+ * Values match the plugin: 1 = manual, 3 = aperture priority (auto). */
+static bool set_exposure_manual(uint32_t idx) {
+  uint32_t ret = Nori_Xvision_SetProcessingUnitControl(
+      idx, V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_MANUAL);
+  if (ret != NORI_OK) {
+    fprintf(stderr, "SetProcessingUnitControl(EXPOSURE_AUTO=manual) failed: 0x%04x\n", ret);
+    return false;
+  }
+  return true;
+}
+
+static int cmd_shutter_get(uint32_t idx) {
+  SdkGuard sdk;
+  if (!sdk.ok()) return 2;
+  if (!check_index(idx, sdk.device_count())) return 2;
+
+  uint32_t value = 0;
+  uint32_t ret = Nori_Xvision_GetSensorShutter(idx, &value);
+  if (ret != NORI_OK) {
+    fprintf(stderr, "GetSensorShutter failed: 0x%04x\n", ret);
+    return 2;
+  }
+  printf("%u\n", value);
+  return 0;
+}
+
+static int cmd_shutter_set(uint32_t idx, uint32_t value) {
+  SdkGuard sdk;
+  if (!sdk.ok()) return 2;
+  if (!check_index(idx, sdk.device_count())) return 2;
+
+  if (!set_exposure_manual(idx)) return 2;
+
+  uint32_t ret = Nori_Xvision_SetSensorShutter(idx, value);
+  if (ret != NORI_OK) {
+    fprintf(stderr, "SetSensorShutter(%u) failed: 0x%04x\n", value, ret);
+    return 2;
+  }
+  return 0;
+}
+
+static int cmd_gain_get(uint32_t idx) {
+  SdkGuard sdk;
+  if (!sdk.ok()) return 2;
+  if (!check_index(idx, sdk.device_count())) return 2;
+
+  uint32_t cur = 0, mn = 0, mx = 0, step = 0;
+  uint32_t ret = Nori_Xvision_GetSensorGain(idx, &cur, &mn, &mx, &step);
+  if (ret != NORI_OK) {
+    fprintf(stderr, "GetSensorGain failed: 0x%04x\n", ret);
+    return 2;
+  }
+  printf("cur=%u min=%u max=%u step=%u\n", cur, mn, mx, step);
+  return 0;
+}
+
+static int cmd_gain_set(uint32_t idx, uint32_t value) {
+  SdkGuard sdk;
+  if (!sdk.ok()) return 2;
+  if (!check_index(idx, sdk.device_count())) return 2;
+
+  if (!set_exposure_manual(idx)) return 2;
+
+  uint32_t ret = Nori_Xvision_SetSensorGain(idx, value);
+  if (ret != NORI_OK) {
+    fprintf(stderr, "SetSensorGain(%u) failed: 0x%04x\n", value, ret);
+    return 2;
+  }
+  return 0;
+}
+
+/* ================================================================
+ *  state -- sectioned dump of all getter-visible camera state
+ * ================================================================ */
+
+struct PuEntry {
+  int32_t     cid;
+  const char *name;
+};
+
+/* V4L2 UVC Processing Unit controls the Nori SDK exposes.
+ * Unsupported ones print (unsupported) rather than aborting the dump. */
+static const PuEntry kPuControls[] = {
+  { V4L2_CID_BRIGHTNESS,              "BRIGHTNESS"              },
+  { V4L2_CID_CONTRAST,                "CONTRAST"                },
+  { V4L2_CID_SATURATION,              "SATURATION"              },
+  { V4L2_CID_SHARPNESS,               "SHARPNESS"               },
+  { V4L2_CID_HUE,                     "HUE"                     },
+  { V4L2_CID_GAMMA,                   "GAMMA"                   },
+  { V4L2_CID_GAIN,                    "GAIN"                    },
+  { V4L2_CID_EXPOSURE_ABSOLUTE,       "EXPOSURE_ABSOLUTE"       },
+  { V4L2_CID_EXPOSURE_AUTO,           "EXPOSURE_AUTO"           },
+  { V4L2_CID_EXPOSURE_AUTO_PRIORITY,  "EXPOSURE_AUTO_PRIORITY"  },
+  { V4L2_CID_AUTO_WHITE_BALANCE,      "AUTO_WHITE_BALANCE"      },
+  { V4L2_CID_WHITE_BALANCE_TEMPERATURE,"WHITE_BALANCE_TEMPERATURE"},
+  { V4L2_CID_BACKLIGHT_COMPENSATION,  "BACKLIGHT_COMPENSATION"  },
+  { V4L2_CID_POWER_LINE_FREQUENCY,    "POWER_LINE_FREQUENCY"    },
+};
+
+static void print_section(const char *title) {
+  printf("\n[%s]\n", title);
+}
+
+/* Two-column key/value line used throughout. */
+static void print_kv(const char *key, const char *fmt, ...) {
+  printf("  %-22s : ", key);
+  va_list ap;
+  va_start(ap, fmt);
+  vprintf(fmt, ap);
+  va_end(ap);
+  putchar('\n');
+}
+
+/* Print "err 0xNNNN" in place of a value when a getter fails. */
+static void print_kv_err(const char *key, uint32_t ret) {
+  printf("  %-22s : err 0x%04x\n", key, ret);
+}
+
+static int cmd_state(uint32_t idx) {
+  SdkGuard sdk;
+  if (!sdk.ok()) return 2;
+  if (!check_index(idx, sdk.device_count())) return 2;
+
+  printf("======================================================================\n");
+  printf(" Nori camera state -- device %u\n", idx);
+  printf("======================================================================\n");
+
+  /* --- Sensor --- */
+  print_section("Sensor");
+  {
+    uint32_t us = 0;
+    uint32_t r = Nori_Xvision_GetSensorShutter(idx, &us);
+    if (r == NORI_OK) print_kv("shutter (us)", "%u", us);
+    else              print_kv_err("shutter (us)", r);
+  }
+  {
+    uint32_t cur = 0, mn = 0, mx = 0, step = 0;
+    uint32_t r = Nori_Xvision_GetSensorGain(idx, &cur, &mn, &mx, &step);
+    if (r == NORI_OK) print_kv("gain", "cur=%u min=%u max=%u step=%u", cur, mn, mx, step);
+    else              print_kv_err("gain", r);
+  }
+  {
+    uint32_t bl = 0;
+    uint32_t r = Nori_Xvision_GetSensorBlackLevel(idx, &bl);
+    if (r == NORI_OK) print_kv("black level", "%u", bl);
+    else              print_kv_err("black level", r);
+  }
+  {
+    E_SENSOR_MIRROR_FLIP mf = Normal;
+    uint32_t r = Nori_Xvision_GetSensorMirrorFlip(idx, &mf);
+    if (r == NORI_OK) print_kv("mirror/flip", "%s", mirror_flip_name(mf));
+    else              print_kv_err("mirror/flip", r);
+  }
+
+  /* --- Image --- */
+  print_section("Image");
+  {
+    XY_OFFSET off = {0, 0};
+    uint32_t r = Nori_Xvision_GetImageOffset(idx, &off);
+    if (r == NORI_OK) print_kv("offset (x,y)", "%u, %u", off.width_offset, off.height_offset);
+    else              print_kv_err("offset (x,y)", r);
+  }
+  {
+    uint32_t v = 0;
+    uint32_t r = Nori_Xvision_GetLensCorrectionEnable(idx, &v);
+    if (r == NORI_OK) print_kv("lens correction", "%s", v ? "on" : "off");
+    else              print_kv_err("lens correction", r);
+  }
+
+  /* --- Trigger --- */
+  print_section("Trigger");
+  {
+    E_TRIGGER_MODE m = NON_TRIIGER_MODE;
+    uint32_t r = Nori_Xvision_GetTriggerMode(idx, &m);
+    if (r == NORI_OK) print_kv("mode", "%s", trigger_name(m));
+    else              print_kv_err("mode", r);
+  }
+
+  /* --- White balance --- */
+  print_section("White balance");
+  {
+    WB_RGB_GAIN g = {0, 0, 0};
+    uint32_t r = Nori_Xvision_GetWhiteBalanceGain(idx, &g);
+    if (r == NORI_OK) print_kv("RGB gain", "R=%u G=%u B=%u", g.gain_r, g.gain_g, g.gain_b);
+    else              print_kv_err("RGB gain", r);
+  }
+
+  /* --- One-shot auto status --- */
+  print_section("One-shot auto status");
+  {
+    uint32_t v = 0;
+    uint32_t r = Nori_Xvision_GetSingleAutoWhiteBalance(idx, &v);
+    if (r == NORI_OK) print_kv("auto WB", "%u", v);
+    else              print_kv_err("auto WB", r);
+  }
+  {
+    uint32_t v = 0;
+    uint32_t r = Nori_Xvision_GetSingleAutoFocus(idx, &v);
+    if (r == NORI_OK) print_kv("auto focus", "%u", v);
+    else              print_kv_err("auto focus", r);
+  }
+  {
+    uint32_t v = 0;
+    uint32_t r = Nori_Xvision_GetSingleAutoExposure(idx, &v);
+    if (r == NORI_OK) print_kv("auto exposure", "%u", v);
+    else              print_kv_err("auto exposure", r);
+  }
+
+  /* --- UVC Processing Unit controls --- */
+  print_section("UVC Processing Unit");
+  printf("  %-26s %10s %8s %8s %10s %10s %10s\n",
+         "control", "cur", "flags", "step", "min", "max", "default");
+  printf("  %-26s %10s %8s %8s %10s %10s %10s\n",
+         "--------------------------",
+         "----------", "--------", "--------", "----------", "----------", "----------");
+  for (const auto &e : kPuControls) {
+    int32_t cur = 0, flags = 0, step = 0, mn = 0, mx = 0, def = 0;
+    uint32_t r = Nori_Xvision_GetProcessingUnitControl(
+        idx, e.cid, &cur, &flags, &step, &mn, &mx, &def);
+    if (r == NORI_OK) {
+      printf("  %-26s %10d %8d %8d %10d %10d %10d\n",
+             e.name, cur, flags, step, mn, mx, def);
+    } else {
+      printf("  %-26s (unsupported: 0x%04x)\n", e.name, r);
+    }
+  }
+
+  putchar('\n');
+  return 0;
+}
+
 static int cmd_esn_get(uint32_t idx, bool hex) {
   SdkGuard sdk;
   if (!sdk.ok()) return 2;
@@ -474,7 +725,22 @@ static void usage() {
     "  tag clear <idx>            [--block <n>]\n"
     "      Per-camera identity tag stored in user-data block %u by default.\n"
     "      Survives power cycle and firmware update (per SDK spec).\n"
-    "      `tag set` refuses to overwrite unrecognised data without --force.\n",
+    "      `tag set` refuses to overwrite unrecognised data without --force.\n"
+    "\n"
+    "  shutter get <idx>\n"
+    "  shutter set <idx> <microseconds>\n"
+    "      Sensor shutter / exposure time. `set` switches exposure to manual\n"
+    "      mode first (required by SDK).\n"
+    "\n"
+    "  gain get <idx>\n"
+    "  gain set <idx> <value>\n"
+    "      Sensor analogue gain multiplier. `get` prints cur/min/max/step.\n"
+    "      `set` switches exposure to manual mode first (required by SDK).\n"
+    "\n"
+    "  state <idx>\n"
+    "      Dump camera state in sectioned tables: sensor (shutter/gain/black\n"
+    "      level/mirror-flip), image (offset/lens correction), trigger, white\n"
+    "      balance, one-shot auto status, and all UVC PU controls.\n",
     NORI_TAG_BLOCK_DEFAULT);
 }
 
@@ -567,6 +833,42 @@ int main(int argc, char *argv[]) {
       }
       if (!inpath) { usage(); return 1; }
       return cmd_udata_set(idx, piece, inpath);
+    }
+    usage();
+    return 1;
+  }
+
+  if (cmd == "state") {
+    if (argc != 3) { usage(); return 1; }
+    uint32_t idx;
+    if (!parse_uint(argv[2], &idx)) {
+      fprintf(stderr, "Invalid device index: %s\n", argv[2]);
+      return 1;
+    }
+    return cmd_state(idx);
+  }
+
+  if (cmd == "shutter" || cmd == "gain") {
+    if (!need_args(argc, 4)) return 1;
+    const std::string sub = argv[2];
+    uint32_t idx;
+    if (!parse_uint(argv[3], &idx)) {
+      fprintf(stderr, "Invalid device index: %s\n", argv[3]);
+      return 1;
+    }
+    if (sub == "get") {
+      if (argc != 4) { usage(); return 1; }
+      return (cmd == "shutter") ? cmd_shutter_get(idx) : cmd_gain_get(idx);
+    }
+    if (sub == "set") {
+      if (argc != 5) { usage(); return 1; }
+      uint32_t value;
+      if (!parse_uint(argv[4], &value)) {
+        fprintf(stderr, "Invalid %s value: %s\n", cmd.c_str(), argv[4]);
+        return 1;
+      }
+      return (cmd == "shutter") ? cmd_shutter_set(idx, value)
+                                : cmd_gain_set(idx, value);
     }
     usage();
     return 1;
