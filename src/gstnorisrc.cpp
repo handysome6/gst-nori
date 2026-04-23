@@ -118,14 +118,6 @@ enum
   PROP_ROLE,
   PROP_TRIGGER_MODE,
   PROP_MIRROR_FLIP,
-  PROP_BRIGHTNESS,
-  PROP_CONTRAST,
-  PROP_SATURATION,
-  PROP_SHARPNESS,
-  PROP_HUE,
-  PROP_GAMMA,
-  PROP_GAIN,
-  PROP_EXPOSURE,
   PROP_AUTO_EXPOSURE,
   PROP_AUTO_WHITE_BALANCE,
   PROP_SENSOR_SHUTTER,
@@ -222,64 +214,31 @@ gst_nori_src_class_init (GstNoriSrcClass *klass)
           GST_TYPE_NORI_MIRROR_FLIP, GST_NORI_MF_NORMAL,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  g_object_class_install_property (gobject_class, PROP_BRIGHTNESS,
-      g_param_spec_int ("brightness", "Brightness",
-          "UVC brightness (V4L2_CID_BRIGHTNESS)", G_MININT, G_MAXINT, 0,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property (gobject_class, PROP_CONTRAST,
-      g_param_spec_int ("contrast", "Contrast",
-          "UVC contrast (V4L2_CID_CONTRAST)", G_MININT, G_MAXINT, 0,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property (gobject_class, PROP_SATURATION,
-      g_param_spec_int ("saturation", "Saturation",
-          "UVC saturation (V4L2_CID_SATURATION)", G_MININT, G_MAXINT, 0,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property (gobject_class, PROP_SHARPNESS,
-      g_param_spec_int ("sharpness", "Sharpness",
-          "UVC sharpness (V4L2_CID_SHARPNESS)", G_MININT, G_MAXINT, 0,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property (gobject_class, PROP_HUE,
-      g_param_spec_int ("hue", "Hue",
-          "UVC hue (V4L2_CID_HUE)", G_MININT, G_MAXINT, 0,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property (gobject_class, PROP_GAMMA,
-      g_param_spec_int ("gamma", "Gamma",
-          "UVC gamma (V4L2_CID_GAMMA)", G_MININT, G_MAXINT, 0,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property (gobject_class, PROP_GAIN,
-      g_param_spec_int ("gain", "Gain",
-          "UVC gain (V4L2_CID_GAIN)", G_MININT, G_MAXINT, 0,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-  g_object_class_install_property (gobject_class, PROP_EXPOSURE,
-      g_param_spec_int ("exposure", "Exposure",
-          "UVC manual exposure (V4L2_CID_EXPOSURE_ABSOLUTE)", G_MININT, G_MAXINT, 0,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
   g_object_class_install_property (gobject_class, PROP_AUTO_EXPOSURE,
       g_param_spec_boolean ("auto-exposure", "Auto exposure",
-          "Enable auto exposure (V4L2_CID_EXPOSURE_AUTO)", TRUE,
+          "Enable UVC auto exposure. When TRUE, the camera firmware drives both "
+          "integration time and gain; sensor-shutter and sensor-gain are ignored. "
+          "When FALSE, the UVC exposure/gain registers are reset to device "
+          "defaults and sensor-shutter / sensor-gain take effect.", TRUE,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   g_object_class_install_property (gobject_class, PROP_AUTO_WHITE_BALANCE,
       g_param_spec_boolean ("auto-white-balance", "Auto white balance",
-          "Enable auto white balance (V4L2_CID_AUTO_WHITE_BALANCE)", TRUE,
+          "Enable UVC auto white balance (V4L2_CID_AUTO_WHITE_BALANCE)", TRUE,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   g_object_class_install_property (gobject_class, PROP_SENSOR_SHUTTER,
       g_param_spec_uint ("sensor-shutter", "Sensor shutter",
-          "Sensor shutter / exposure time in microseconds", 0, G_MAXUINT, 0,
+          "Sensor shutter / exposure time in microseconds. Only applied when "
+          "auto-exposure=false; a warning is logged otherwise.",
+          0, G_MAXUINT, 0,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   g_object_class_install_property (gobject_class, PROP_SENSOR_GAIN,
       g_param_spec_uint ("sensor-gain", "Sensor gain",
-          "Sensor analogue gain multiplier", 0, G_MAXUINT, 0,
+          "Sensor analogue gain multiplier. Only applied when "
+          "auto-exposure=false; a warning is logged otherwise.",
+          0, G_MAXUINT, 0,
           (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   /* ---- element metadata ---- */
@@ -319,14 +278,6 @@ gst_nori_src_init (GstNoriSrc *self)
   self->role              = NULL;
   self->trigger_mode      = GST_NORI_TRIGGER_NONE;
   self->mirror_flip       = GST_NORI_MF_NORMAL;
-  self->brightness        = 0;
-  self->contrast          = 0;
-  self->saturation        = 0;
-  self->sharpness         = 0;
-  self->hue               = 0;
-  self->gamma             = 0;
-  self->gain              = 0;
-  self->exposure          = 0;
   self->auto_exposure     = TRUE;
   self->auto_white_balance = TRUE;
   self->sensor_shutter    = 0;
@@ -337,6 +288,11 @@ gst_nori_src_init (GstNoriSrc *self)
   self->video_started     = FALSE;
   self->flushing          = FALSE;
 
+  self->uvc_exposure_default = 0;
+  self->uvc_gain_default     = 0;
+  self->uvc_defaults_valid   = FALSE;
+  self->exposure_applied     = GST_NORI_EXP_UNKNOWN;
+
   self->video_infos       = NULL;
   self->n_video_infos     = 0;
 
@@ -344,6 +300,8 @@ gst_nori_src_init (GstNoriSrc *self)
   self->cur_width         = 0;
   self->cur_height        = 0;
   self->cur_fps           = 0.0f;
+
+  g_mutex_init (&self->apply_lock);
 
   /* This is a live source */
   gst_base_src_set_live (GST_BASE_SRC (self), TRUE);
@@ -363,6 +321,7 @@ gst_nori_src_finalize (GObject *obj)
   self->video_infos = NULL;
   g_free (self->role);
   self->role = NULL;
+  g_mutex_clear (&self->apply_lock);
   G_OBJECT_CLASS (parent_class)->finalize (obj);
 }
 
@@ -380,6 +339,78 @@ nori_set_pu (GstNoriSrc *self, gint cid, gint val, const gchar *name)
     GST_WARNING_OBJECT (self, "Set %s = %d failed: 0x%04x", name, val, ret);
   else
     GST_DEBUG_OBJECT (self, "Set %s = %d OK", name, val);
+}
+
+/* ================================================================
+ *  Exposure state machine
+ *
+ *  auto-exposure drives a two-state machine:
+ *
+ *    AUTO   : V4L2_CID_EXPOSURE_AUTO = 3 (aperture-priority). Firmware AE
+ *             owns both integration time and gain. sensor-shutter /
+ *             sensor-gain writes are ignored (with a warning).
+ *    MANUAL : V4L2_CID_EXPOSURE_AUTO = 1. On entry, UVC exposure and gain
+ *             registers are reset to the device's own defaults (captured
+ *             once in start()), so every camera starts from an identical
+ *             baseline before sensor-shutter / sensor-gain take over.
+ *
+ *  exposure_applied tracks the hardware state, independent of what the
+ *  user has asked for, so transitions are idempotent and survive
+ *  start/stop cycles.
+ * ================================================================ */
+
+static void
+nori_apply_exposure (GstNoriSrc *self)
+{
+  guint32 d = self->props_dirty;
+  GstNoriExposureState desired =
+      self->auto_exposure ? GST_NORI_EXP_AUTO : GST_NORI_EXP_MANUAL;
+  gboolean mode_changed        = (desired != self->exposure_applied);
+  gboolean sensor_values_dirty = (d & (PROP_DIRTY_SHUTTER | PROP_DIRTY_SENSOR_GAIN)) != 0;
+
+  if (mode_changed && desired == GST_NORI_EXP_AUTO) {
+    nori_set_pu (self, V4L2_CID_EXPOSURE_AUTO, 3, "auto-exposure=on");
+    self->exposure_applied = GST_NORI_EXP_AUTO;
+    if (sensor_values_dirty)
+      GST_WARNING_OBJECT (self,
+          "sensor-shutter/sensor-gain set while auto-exposure=true; ignored");
+    return;
+  }
+
+  if (mode_changed && desired == GST_NORI_EXP_MANUAL) {
+    nori_set_pu (self, V4L2_CID_EXPOSURE_AUTO, 1, "auto-exposure=off");
+    if (self->uvc_defaults_valid) {
+      nori_set_pu (self, V4L2_CID_EXPOSURE_ABSOLUTE,
+                   self->uvc_exposure_default, "uvc-exposure=default");
+      nori_set_pu (self, V4L2_CID_GAIN,
+                   self->uvc_gain_default, "uvc-gain=default");
+    } else {
+      GST_WARNING_OBJECT (self,
+          "UVC defaults unavailable; cross-camera baseline may vary");
+    }
+    self->exposure_applied = GST_NORI_EXP_MANUAL;
+    /* fall through to write sensor values */
+  }
+
+  if (self->exposure_applied == GST_NORI_EXP_MANUAL) {
+    if (d & PROP_DIRTY_SHUTTER) {
+      uint32_t ret = Nori_Xvision_SetSensorShutter (self->device_index,
+                                                    self->sensor_shutter);
+      if (ret != NORI_OK)
+        GST_WARNING_OBJECT (self, "SetSensorShutter(%u) failed: 0x%04x",
+                            self->sensor_shutter, ret);
+    }
+    if (d & PROP_DIRTY_SENSOR_GAIN) {
+      uint32_t ret = Nori_Xvision_SetSensorGain (self->device_index,
+                                                 self->sensor_gain);
+      if (ret != NORI_OK)
+        GST_WARNING_OBJECT (self, "SetSensorGain(%u) failed: 0x%04x",
+                            self->sensor_gain, ret);
+    }
+  } else if (sensor_values_dirty) {
+    GST_WARNING_OBJECT (self,
+        "sensor-shutter/sensor-gain set while auto-exposure=true; ignored");
+  }
 }
 
 /* ================================================================
@@ -405,41 +436,11 @@ nori_apply_controls (GstNoriSrc *self)
     if (ret != NORI_OK)
       GST_WARNING_OBJECT (self, "SetSensorMirrorFlip failed: 0x%04x", ret);
   }
-  if (d & PROP_DIRTY_BRIGHTNESS)
-    nori_set_pu (self, V4L2_CID_BRIGHTNESS,  self->brightness,  "brightness");
-  if (d & PROP_DIRTY_CONTRAST)
-    nori_set_pu (self, V4L2_CID_CONTRAST,    self->contrast,    "contrast");
-  if (d & PROP_DIRTY_SATURATION)
-    nori_set_pu (self, V4L2_CID_SATURATION,  self->saturation,  "saturation");
-  if (d & PROP_DIRTY_SHARPNESS)
-    nori_set_pu (self, V4L2_CID_SHARPNESS,   self->sharpness,   "sharpness");
-  if (d & PROP_DIRTY_HUE)
-    nori_set_pu (self, V4L2_CID_HUE,         self->hue,         "hue");
-  if (d & PROP_DIRTY_GAMMA)
-    nori_set_pu (self, V4L2_CID_GAMMA,       self->gamma,       "gamma");
-  if (d & PROP_DIRTY_GAIN)
-    nori_set_pu (self, V4L2_CID_GAIN,        self->gain,        "gain");
-  if (d & PROP_DIRTY_AUTO_EXP)
-    nori_set_pu (self, V4L2_CID_EXPOSURE_AUTO,
-                 self->auto_exposure ? 3 : 1, "auto-exposure");
-  if (d & PROP_DIRTY_EXPOSURE)
-    nori_set_pu (self, V4L2_CID_EXPOSURE_ABSOLUTE,
-                 self->exposure, "exposure");
   if (d & PROP_DIRTY_AUTO_WB)
     nori_set_pu (self, V4L2_CID_AUTO_WHITE_BALANCE,
                  self->auto_white_balance ? 1 : 0, "auto-white-balance");
-  if (d & PROP_DIRTY_SHUTTER) {
-    uint32_t ret = Nori_Xvision_SetSensorShutter (self->device_index,
-                                                   self->sensor_shutter);
-    if (ret != NORI_OK)
-      GST_WARNING_OBJECT (self, "SetSensorShutter failed: 0x%04x", ret);
-  }
-  if (d & PROP_DIRTY_SENSOR_GAIN) {
-    uint32_t ret = Nori_Xvision_SetSensorGain (self->device_index,
-                                                self->sensor_gain);
-    if (ret != NORI_OK)
-      GST_WARNING_OBJECT (self, "SetSensorGain failed: 0x%04x", ret);
-  }
+
+  nori_apply_exposure (self);
 
   self->props_dirty = 0;
 }
@@ -475,6 +476,11 @@ gst_nori_src_set_property (GObject *obj, guint id,
 {
   GstNoriSrc *self = GST_NORI_SRC (obj);
 
+  /* Lock for the entire write+apply sequence so we don't race set_caps
+   * (state-change thread) or another set_property call. SDK calls inside
+   * nori_apply_controls can take >1s, making the window wide. */
+  g_mutex_lock (&self->apply_lock);
+
   switch (id) {
     case PROP_DEVICE_INDEX:
       self->device_index = g_value_get_uint (val);
@@ -494,38 +500,6 @@ gst_nori_src_set_property (GObject *obj, guint id,
     case PROP_MIRROR_FLIP:
       self->mirror_flip = (GstNoriMirrorFlip) g_value_get_enum (val);
       self->props_dirty |= PROP_DIRTY_MIRROR_FLIP;
-      break;
-    case PROP_BRIGHTNESS:
-      self->brightness = g_value_get_int (val);
-      self->props_dirty |= PROP_DIRTY_BRIGHTNESS;
-      break;
-    case PROP_CONTRAST:
-      self->contrast = g_value_get_int (val);
-      self->props_dirty |= PROP_DIRTY_CONTRAST;
-      break;
-    case PROP_SATURATION:
-      self->saturation = g_value_get_int (val);
-      self->props_dirty |= PROP_DIRTY_SATURATION;
-      break;
-    case PROP_SHARPNESS:
-      self->sharpness = g_value_get_int (val);
-      self->props_dirty |= PROP_DIRTY_SHARPNESS;
-      break;
-    case PROP_HUE:
-      self->hue = g_value_get_int (val);
-      self->props_dirty |= PROP_DIRTY_HUE;
-      break;
-    case PROP_GAMMA:
-      self->gamma = g_value_get_int (val);
-      self->props_dirty |= PROP_DIRTY_GAMMA;
-      break;
-    case PROP_GAIN:
-      self->gain = g_value_get_int (val);
-      self->props_dirty |= PROP_DIRTY_GAIN;
-      break;
-    case PROP_EXPOSURE:
-      self->exposure = g_value_get_int (val);
-      self->props_dirty |= PROP_DIRTY_EXPOSURE;
       break;
     case PROP_AUTO_EXPOSURE:
       self->auto_exposure = g_value_get_boolean (val);
@@ -551,6 +525,8 @@ gst_nori_src_set_property (GObject *obj, guint id,
   /* If the device is already streaming, apply immediately */
   if (self->video_started)
     nori_apply_controls (self);
+
+  g_mutex_unlock (&self->apply_lock);
 }
 
 static void
@@ -580,30 +556,6 @@ gst_nori_src_get_property (GObject *obj, guint id,
       g_value_set_enum (val, (gint) m);
       break;
     }
-    case PROP_BRIGHTNESS:
-      g_value_set_int (val, nori_get_pu (self, V4L2_CID_BRIGHTNESS, self->brightness));
-      break;
-    case PROP_CONTRAST:
-      g_value_set_int (val, nori_get_pu (self, V4L2_CID_CONTRAST, self->contrast));
-      break;
-    case PROP_SATURATION:
-      g_value_set_int (val, nori_get_pu (self, V4L2_CID_SATURATION, self->saturation));
-      break;
-    case PROP_SHARPNESS:
-      g_value_set_int (val, nori_get_pu (self, V4L2_CID_SHARPNESS, self->sharpness));
-      break;
-    case PROP_HUE:
-      g_value_set_int (val, nori_get_pu (self, V4L2_CID_HUE, self->hue));
-      break;
-    case PROP_GAMMA:
-      g_value_set_int (val, nori_get_pu (self, V4L2_CID_GAMMA, self->gamma));
-      break;
-    case PROP_GAIN:
-      g_value_set_int (val, nori_get_pu (self, V4L2_CID_GAIN, self->gain));
-      break;
-    case PROP_EXPOSURE:
-      g_value_set_int (val, nori_get_pu (self, V4L2_CID_EXPOSURE_ABSOLUTE, self->exposure));
-      break;
     case PROP_AUTO_EXPOSURE: {
       /* Setter writes 3 (aperture-priority) for auto, 1 (manual) otherwise;
        * reverse here so anything but explicit manual reads as auto. */
@@ -731,6 +683,28 @@ gst_nori_src_start (GstBaseSrc *bsrc)
     }
   }
 
+  /* Capture this device's UVC exposure/gain defaults. Used when entering
+   * manual exposure mode so every camera starts from an identical baseline
+   * before sensor-shutter / sensor-gain drive the exposure. */
+  {
+    int32_t _c, _f, _s, _mn, _mx, edef = 0, gdef = 0;
+    uint32_t re = Nori_Xvision_GetProcessingUnitControl (self->device_index,
+        V4L2_CID_EXPOSURE_ABSOLUTE, &_c, &_f, &_s, &_mn, &_mx, &edef);
+    uint32_t rg = Nori_Xvision_GetProcessingUnitControl (self->device_index,
+        V4L2_CID_GAIN,              &_c, &_f, &_s, &_mn, &_mx, &gdef);
+    self->uvc_defaults_valid   = (re == NORI_OK && rg == NORI_OK);
+    self->uvc_exposure_default = (re == NORI_OK) ? edef : 0;
+    self->uvc_gain_default     = (rg == NORI_OK) ? gdef : 0;
+    if (self->uvc_defaults_valid) {
+      GST_INFO_OBJECT (self, "UVC defaults: exposure=%d gain=%d",
+          self->uvc_exposure_default, self->uvc_gain_default);
+    } else {
+      GST_WARNING_OBJECT (self,
+          "Could not read UVC defaults (exposure=0x%04x gain=0x%04x)", re, rg);
+    }
+  }
+
+  self->exposure_applied = GST_NORI_EXP_UNKNOWN;
   self->flushing = FALSE;
   return TRUE;
 }
@@ -759,6 +733,11 @@ gst_nori_src_stop (GstBaseSrc *bsrc)
     nori_sdk_unref ();
     self->sdk_inited = FALSE;
   }
+
+  /* Invalidate per-device baseline so a restart (possibly on a different
+   * camera) re-reads defaults and runs a fresh AE transition. */
+  self->uvc_defaults_valid = FALSE;
+  self->exposure_applied   = GST_NORI_EXP_UNKNOWN;
 
   return TRUE;
 }
@@ -928,8 +907,17 @@ gst_nori_src_set_caps (GstBaseSrc *bsrc, GstCaps *caps)
       (char)(sdk_fmt >> 16), (char)(sdk_fmt >> 24),
       w, h, vi.f_Fps);
 
-  /* Apply any queued camera-control properties */
+  /* Force the exposure state machine to run at least once on first start,
+   * so the UVC baseline is enforced even if the user left auto-exposure at
+   * its default. exposure_applied=UNKNOWN (set in start()/stop()) guarantees
+   * nori_apply_exposure treats this as a mode transition.
+   *
+   * Held under apply_lock so a concurrent set_property cannot race the
+   * mode transition — SDK calls inside apply can take >1s. */
+  g_mutex_lock (&self->apply_lock);
+  self->props_dirty |= PROP_DIRTY_AUTO_EXP;
   nori_apply_controls (self);
+  g_mutex_unlock (&self->apply_lock);
 
   return TRUE;
 }

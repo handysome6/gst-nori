@@ -43,18 +43,18 @@ GType gst_nori_mirror_flip_get_type (void);
 /* ---- Dirty-property bitmask ---- */
 #define PROP_DIRTY_TRIGGER       (1u <<  0)
 #define PROP_DIRTY_MIRROR_FLIP   (1u <<  1)
-#define PROP_DIRTY_BRIGHTNESS    (1u <<  2)
-#define PROP_DIRTY_CONTRAST      (1u <<  3)
-#define PROP_DIRTY_SATURATION    (1u <<  4)
-#define PROP_DIRTY_SHARPNESS     (1u <<  5)
-#define PROP_DIRTY_HUE           (1u <<  6)
-#define PROP_DIRTY_GAMMA         (1u <<  7)
-#define PROP_DIRTY_GAIN          (1u <<  8)
-#define PROP_DIRTY_EXPOSURE      (1u <<  9)
-#define PROP_DIRTY_AUTO_EXP      (1u << 10)
-#define PROP_DIRTY_AUTO_WB       (1u << 11)
-#define PROP_DIRTY_SHUTTER       (1u << 12)
-#define PROP_DIRTY_SENSOR_GAIN   (1u << 13)
+#define PROP_DIRTY_AUTO_EXP      (1u <<  2)
+#define PROP_DIRTY_AUTO_WB       (1u <<  3)
+#define PROP_DIRTY_SHUTTER       (1u <<  4)
+#define PROP_DIRTY_SENSOR_GAIN   (1u <<  5)
+
+/* Hardware-applied exposure state. Tracks what the device is *currently in*,
+ * not what the user asked for, so transitions are idempotent. */
+typedef enum {
+  GST_NORI_EXP_UNKNOWN = 0,
+  GST_NORI_EXP_AUTO,
+  GST_NORI_EXP_MANUAL,
+} GstNoriExposureState;
 
 struct _GstNoriSrc
 {
@@ -65,26 +65,34 @@ struct _GstNoriSrc
   gchar               *role;            /* user-assigned tag label; NULL = match by device_index */
   GstNoriTriggerMode   trigger_mode;
   GstNoriMirrorFlip    mirror_flip;
-  gint                 brightness;
-  gint                 contrast;
-  gint                 saturation;
-  gint                 sharpness;
-  gint                 hue;
-  gint                 gamma;
-  gint                 gain;
-  gint                 exposure;
   gboolean             auto_exposure;
   gboolean             auto_white_balance;
-  guint                sensor_shutter;   /* microseconds */
-  guint                sensor_gain;
+  guint                sensor_shutter;   /* microseconds, used only when !auto_exposure */
+  guint                sensor_gain;      /* multiplier,   used only when !auto_exposure */
 
   /* Tracks which properties were explicitly set by the user */
   guint32              props_dirty;
+
+  /* Serialises nori_apply_controls / set_property / set_caps. SDK control
+   * calls can take >1s, long enough for the state-change thread (set_caps)
+   * and the property-setter thread to race through the exposure state
+   * machine concurrently and double-apply it. */
+  GMutex               apply_lock;
 
   /* --- Runtime state --- */
   gboolean             sdk_inited;
   gboolean             video_started;
   volatile gboolean    flushing;
+
+  /* Per-device UVC defaults, read once in start(). Used on AUTO->MANUAL
+   * transition to force a deterministic baseline so sensor-shutter/gain
+   * are the only knobs driving exposure. */
+  gint32               uvc_exposure_default;
+  gint32               uvc_gain_default;
+  gboolean             uvc_defaults_valid;
+
+  /* Hardware-applied AE state, for transition detection */
+  GstNoriExposureState exposure_applied;
 
   /* Enumerated device capabilities (filled in start()) */
   VIDEO_INFO          *video_infos;
